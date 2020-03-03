@@ -5,6 +5,7 @@ import general_robotics_toolbox as rox
 import QuadProg as qp
 import sys
 import rpi_ati_net_ft
+import matplotlib.pyplot as plt
 
 def abb_irb6640_180_255_robot():
     """Return a Robot instance for the ABB IRB6640 180-255 robot"""
@@ -15,7 +16,7 @@ def abb_irb6640_180_255_robot():
     a = np.array([0,0,0])
     
     H = np.array([z,y,y,x,y,x]).T
-    P = np.array([0.78*z, 0.32*x, 1.075*z, 0.2*z, 1.142*x, 0.2*x, a]).T
+    P = np.array([0.78*z, 0.32*x, 1.075*z, 0.2*z, 1.1425*x, 0.2*x, a]).T
     joint_type = [0,0,0,0,0,0]
     joint_min = np.deg2rad(np.array([-170, -65, -180, -300, -120, -360]))
     joint_max = np.deg2rad(np.array([170, 85, 70, 300, 120, 360]))
@@ -33,54 +34,74 @@ def main():
     abb_robot = abb_irb6640_180_255_robot()
 
     # desired force
-    Fd = -1000
+    #Fd = 1000
 		
     # desired velocity in y
-    vdy = 0
+    #vdy = -0.5
 	
     # feedback gain
-    Kp = 0.0004
-    Kd = 0.0008*2
+    Kp = 0.0002
+    Kd = 0.0008
     Ki = 0.0004
 	
     # time step
     delta_t = 0.004
 	
     # initial configuration in degree
-    init = [-90,1.92,38.8,0,48.28,0]
+    init = [-91.85,2.53,38.20,0.00,49.27,-1.85]
+
+    n = 2000
 
     # quadprog to solve for joint velocity
     quadprog = qp.QuadProg(abb_robot)
 	
-    # force sensor initialization
+    # force sensor interface
     try:
         if (len(sys.argv) < 2):
             raise Exception('IP address of ATI Net F/T sensor required')
         host=sys.argv[1]
         netft=rpi_ati_net_ft.NET_FT(host)
         netft.set_tare_from_ft()
-        
-        netft.start_streaming()
        
+        netft.start_streaming()
     except KeyboardInterrupt:
         pass
-	
+
+    ####### trapezoidal desired force in z #######
+    tt = np.linspace(0, 4*np.pi, n)
+    desired_f = np.zeros((1, n))
+    vdy = np.zeros((1, n))
+
+    # form trap force and trap motion
+    for i in range(n):
+        if tt[i] >= 0 and tt[i] < np.pi:
+            desired_f[0, i] = 50+302*tt[i]
+            vdy[0, i] = -0.2*tt[i]
+        elif tt[i] >= np.pi and tt[i] < 3*np.pi:
+            desired_f[0, i] = 50+302*np.pi
+            vdy[0, i] = -0.2*np.pi
+        else:
+            desired_f[0, i] = 50+302*np.pi-302*(tt[i]-3*np.pi)
+            vdy[0, i] = -0.2*np.pi+ 0.2*(tt[i]-3*np.pi)
+    #plt.plot(vdy[0, :])
+    #plt.show()
+
     ######## change here ########
-    pos = 0
-    acce = 0
-    v_l_pre = 0
+    #pos = 0
+    #acce = 0
+    #v_l_pre = 0
     #########
 	
-    # output force in z
-    n = 6000
-    force_out = np.zeros((6, n))	
-	
-    # desired force in z
-    desired_f = np.zeros((1, n))
+    # output force
+    force_out = np.zeros((6, n))
 	
     # pos of eef
     eef_pos = np.zeros((3, n))	
-	
+    eef_orien = np.zeros((4, n))
+
+    # timestamp
+    tim = np.zeros((1, n))
+
     # referece height of coupon that achieves desired force
     z_ref = 0.89226
     x_ref = 0
@@ -91,96 +112,118 @@ def main():
     while tag:
         res, state = egm.receive_from_robot(.1)
         if res: 
-            if np.fabs(sum(np.rad2deg(state.joint_angles)) - sum(init)) < 1e-2:
+            #print sum(np.rad2deg(state.joint_angles))- sum(init)
+            if np.fabs(sum(np.rad2deg(state.joint_angles)) - sum(init)) < 1e-3:
                 tag = False
 	
-    time.sleep(0.5)	
+    time.sleep(1)	
     print '--------start force control--------'
 	
+    ### drain the force sensor buffer ###	
+    for i in range(1000):	
+        flag, ft = netft.read_ft_streaming(.1)
+		
+    ### drain the EGM buffer ###	
+    for i in range(1000):	
+        res, state = egm.receive_from_robot(.1)
+		
+    flag, ft = netft.read_ft_streaming(.1)
+    F0 = ft[5]
+    print F0  
+    time.sleep(2) 
+
     cnt = 0
-    count = 0
-    while count < n: #pose.p[0] < 2:
-        t_pre = time.time()
+    while cnt < n:
         # receive EGM feedback
         res, state = egm.receive_from_robot(.1)
-        #print state.joint_angles
+
         if not res:
             continue
        
-	    # forward kinematics to calculate current position of eef
+	    # forward kinematics
         pose = rox.fwdkin(abb_robot, state.joint_angles)
-        # read force/torque
+        R = pose.R
         flag, ft = netft.read_ft_streaming(.1)
-        F = ft[5] # first three torques and then three forces
 
-        if F > Fd+0.1 and cnt == 0:
-            Fd = Fd
+        # map torque/force from sensor frame to base frame
+        T_b = np.matmul(R, ft[0:3])
+        F_b = np.matmul(R, ft[3:None])
+        F = F_b[2] # first three torques and then three forces
+
+        Fd0 = 50
+        # do not start motion in y until robot barely touches coupon (50 N)
+        if F < Fd0-0.1 and cnt == 0:
             z = pose.p[2]
             # account for the robot base and length of tool
-            z = z + 0.026-0.18
+            z = z + 0.026-0.18+0.00353
             # will shake if gain too large, here use 0.0002
-            v_z = -0.0002*1*(F-Fd)-Ki*(z-z_ref)-Kd*acce#-Ki*pos
+            v_z = Kp*10*(F-Fd0)
             v_l = np.array([0, 0, v_z])
         else: 
-            Fd = Fd
-            # ramping up force
+            # deadzone for Fx
+            if abs(F_b[0]) < 30:
+                F_x = 0
+
+            # deadzone for Fy
+            if abs(F_b[1]) < 30:
+                F_y = 0
+
+            v_x = Kp/2*(F_x-0)
+            v_y = vdy[0, cnt] + Kp/2*(F_y-0)
+            z = pose.p[2]
+
+            #print desired_f[0, cnt]
+            # account for the robot base and length of tool
+            z = z + 0.026-0.18+0.00353
+            v_z = Kp*(F-desired_f[0, cnt])
+            v_l = np.array([v_x, v_y, v_z])
+
+            force_out[:, cnt] = np.concatenate((T_b, F_b), axis=0)
+
+            eef_pos[:, cnt] = pose.p
+
+            quat = rox.R2q(R)
+            eef_orien[:, cnt] = quat
+            tim[0, cnt] = time.time()
 
             cnt += 1
-            if cnt == 1:
-                tt = np.linspace(0, 4*np.pi, n)
-                vdy = 0.5*2*np.sin(5*tt)
-                #print "start motion"
-            
-            z = pose.p[2]
-            # account for the robot base and length of tool
-            z = z + 0.026-0.18
-            v_z = -Kp*(F-Fd)-Ki*(z-z_ref)-Kd*acce
-            #v_z = -Kp*1.0*(F-Fd)-Kd*acce#-Ki*pos
-            v_l = np.array([0, vdy[cnt-1], v_z])
-          
+     
         print F
-        force_out[:, count] = ft
-        eef_pos[:, count] = pose.p
-        eef_pos[2, count] = pose.p[2] + 0.026-0.18
-        desired_f[0, count] = Fd
-		
+
         #### change here ####
         #pos = pos + v_l[2]*delta_t
-        acce = (v_l[2]-v_l_pre)/delta_t
+        #acce = (v_l[2]-v_l_pre)/delta_t
 						
         # formalize entire twist
         spatial_velocity_command = np.array([0, 0, 0, v_l[0], v_l[1], v_l[2]])
 
         # emergency stop if force too large
-        if abs(F) > 2500:
+        if abs(F) > 2000:
             spatial_velocity_command = np.array([0, 0, 0, 0, 0, 0])
             print "force too large, stop..."
+        
         # solve for joint velocity
         # Jacobian inverse
-        #J = rox.robotjacobian(abb_robot, np.deg2rad(state.joint_angles))		
+        #J = rox.robotjacobian(abb_robot, state.joint_angles)		
         #joints_vel = np.linalg.pinv(J).dot(spatial_velocity_command)
 		
         # QP
         joints_vel = quadprog.compute_joint_vel_cmd_qp(state.joint_angles, spatial_velocity_command)
 		
         # commanded joint position setpoint to EGM
-        q_c = state.joint_angles + joints_vel*delta_t*4
+        q_c = state.joint_angles + joints_vel*delta_t
 		
         egm.send_to_robot(q_c)
    
         ####### change here ########
-        v_l_pre = v_l[2]
+        #v_l_pre = v_l[2]
         
-        t_new = time.time()
-
-        #t_all = t_all+ t_new-t_pre
-        if t_new - t_pre < delta_t:
-            time.sleep(delta_t - t_new + t_pre)	
-        count = count+1
+        #if t_new - t_pre < delta_t:
+        #    time.sleep(delta_t - t_new + t_pre)	
 		
-        if count == n:
-            csv_dat=np.hstack((desired_f.T, force_out.T, eef_pos.T))
-            np.savetxt('constant_force_slow_motion_mass_16_120419_same_KpKi.csv', csv_dat, fmt='%6.5f', delimiter=',')#, header='desired joint, optimal input')
+        if cnt == n:
+            csv_dat=np.hstack((desired_f.T, vdy.T, force_out.T, eef_pos.T, eef_orien.T, tim.T))
+            np.savetxt('trap_force_trap_motion_020520.csv', csv_dat, fmt='%6.5f', delimiter=',')#, header='desired joint, optimal input')
             print "done"
 				
 		
