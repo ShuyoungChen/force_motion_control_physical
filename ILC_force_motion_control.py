@@ -10,7 +10,6 @@ import sys
 import rpi_ati_net_ft
 from scipy.optimize import minimize_scalar
 from scipy import interpolate
-#import winsound
 
 def abb_irb6640_180_255_robot():
     """Return a Robot instance for the ABB IRB6640 180-255 robot"""
@@ -89,7 +88,7 @@ def first_half(input, num_iter):
 
     cnt = 0
     step_done = False
-    while cnt < n:#pose.p[0] < 2 and cnt < n:
+    while cnt < n:
         #t_pre = time.time()
         # receive EGM feedback
         res, state = egm.receive_from_robot(.1)
@@ -99,6 +98,7 @@ def first_half(input, num_iter):
 			
         q_new = state.joint_angles
 
+        # step-over
         if not step_done:
             print '--------start step-over motion--------'
             # do step-over of 0.25 mm in +x in world frame
@@ -196,7 +196,7 @@ def first_half(input, num_iter):
         joints_vel = quadprog.compute_joint_vel_cmd_qp(q_new, spatial_velocity_command)
         
         # commanded joint position setpoint to EGM
-        q_c = q_new + joints_vel*delta_t#*4
+        q_c = q_new + joints_vel*delta_t
         egm.send_to_robot(q_c)
         # joint angle at previous time step
         #q_pre = q_new
@@ -257,7 +257,7 @@ def second_half(x, out_pre, num_iter):
     # for observer k should be symmetric and positive definite
     kl = 0.1
 	
-    ### drain the force buffer ###
+    ### drain the force sensor buffer ###
     count = 0
     while count < 1000:
         flag, ft = netft.read_ft_streaming(.1)
@@ -275,7 +275,7 @@ def second_half(x, out_pre, num_iter):
 
     cnt = 0
     step_done = False
-    while cnt < n:#pose.p[0] < 2 and cnt < n:
+    while cnt < n:
         #t_pre = time.time()
         # receive EGM feedback
         res, state = egm.receive_from_robot(.1)
@@ -285,6 +285,7 @@ def second_half(x, out_pre, num_iter):
        
         q_new = state.joint_angles
 		
+        # step-over
         if not step_done:
             print '--------start step-over motion--------'
             # do step-over of 0.25 mm in +x in world frame
@@ -369,7 +370,7 @@ def second_half(x, out_pre, num_iter):
         joints_vel = quadprog.compute_joint_vel_cmd_qp(q_new, spatial_velocity_command)
 			
         # commanded joint position setpoint to EGM
-        q_c = q_new + joints_vel*delta_t#*4
+        q_c = q_new + joints_vel*delta_t
 		
         egm.send_to_robot(q_c)
         # joint angle at previous time step
@@ -528,11 +529,9 @@ for i in range(iter):
     x_cp = x.copy()
     # second pass into the dynamical system	
     errflip2 = second_half(x_cp, out, i)
-    #plt.plot(tt, errflip2[5, :])
-    #plt.show()
     time.sleep(2)  
     
-	################### sometimes 1d search may still be slow
+	# 1d search for optimal learning rate
     #print '----start searching optimal learning rate.----'
     #res = minimize_scalar(object_function, bounds=(0.0, 1.0), method='bounded', options={'maxiter': 5})
     #print '----the optimal learning rate is:----' 
@@ -541,7 +540,7 @@ for i in range(iter):
     # update input
     #x_in = x_in - res.x*errflip2
 	
-    ############### use fixed learning rate
+    # use fixed learning rate
     res = 0.25
     x_in = x_in - res*errflip2
 	
