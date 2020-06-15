@@ -134,7 +134,7 @@ def first_half(input, num_iter):
         F = F_b[2]# - F0# first three torques and then three forces
 
         # start motion in y direction when robot barely touches coupon
-        Fd0 = 50		
+        Fd0 = 50 # this should be equal to the Fdz[0]	
         if F < Fd0-0.1 and cnt == 0:
             z = pose.p[2]
             # account for the robot base and length of tool
@@ -319,7 +319,7 @@ def second_half(x, out_pre, num_iter):
         F_b = np.matmul(R, ft[3:None])
         F = F_b[2]# - F0# first three torques and then three forces
 		
-        Fd0 = 50
+        Fd0 = 50 # this should be equal to the Fdz[0]
         if F < Fd0-0.1 and cnt == 0:
             z = pose.p[2]
             # account for the robot base and length of tool
